@@ -1,0 +1,807 @@
+---
+title: "Filtrado_TFM_Bifidobacterium_Humano"
+author: "Antonio Bahilo"
+date: "22/01/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Script en *Bash* para la descarga y lanzamiento del programa FastANI
+```{,include=TRUE}
+#Programa para separar genomas descargados por "Host Group" en un único file multifasta.
+##Si se desea lanzar desde un file recodaras poner en la primera linea del programa(#!/bin/bash)
+
+#Paso 1: Eliminar el carácter "|" y "\t" de los nombres de los archivos fasta y Separamos los genomas según el nombre del fasta que empieza cada linea por ">"
+
+#Cambiar el PNH por el nombre que se haya descargado
+
+sed -e 's/|/+/g' -e 's/ /_/g' BVBRC_genome_sequence_PNH.fasta > BVBRC_genome_sequence_PNH_clean.fasta
+cd Genome_PNH/
+cat ../BVBRC_genome_sequence_PNH_clean.fasta | awk '{ if (substr($0, 1, 1)==">") {filename=(substr($0,2) ".fasta")} ;print $0 >> filename; close(filename)}'
+
+#Otra forma de cambiar los nombres de los files
+#rename  's/ /_/g' *.fasta 
+#rename  's/|/X/g' *.fasta
+
+#Paso 2: Editamos los nombres de los archivos dejando solo el "Genome ID"  y ponemos todos las secuencias fasta organizadas por organismos
+cd Genome_PNH/
+a=.fasta
+for i in $(ls);do name="$(echo $i | awk -F "+" '{print $3}' | sed -e 's/_//' -e 's/].fasta$//')"; Newname=$name$a; cat $i >> "$Newname"; rm $i; done
+
+
+#Paso 3: Generar lista con nombre genomas en fna, mas rápido.
+cd ../
+a=Genome_PNH/
+for i in $(cd Genome_PNH;ls)
+do
+  echo "$a$i" >> genome_list_PNH.txt
+done
+
+#Paso 4: Lanzar el programa FastANI
+##Programa FastANI
+##Significado de los comandos: --ql[es la lista con los genomas a analizar]--rl[es la lista con los genomas de referencia] -t [Nº de procesador a utilizar] -o[nombre de file de salida] --fragLen[tamaño de los fragmentos a comparar]
+# Cambiar el archivo ql y rl por el nombre usado, en el caso anterior sería: genome_list_PNH.txt
+time fastani --ql genome_list.txt --rl genome_list.txt -t 4 -o bifido_out --fragLen 1000 --matrix # Para Humano
+
+time fastani --ql genome_list_cow1.txt --rl genome_list_cow1.txt -t 4 -o bifido_out_cow --fragLen 1000 --matrix #Para la vaca
+time fastani --ql genome_list_pig.txt --rl genome_list_pig.txt -t 4 -o bifido_out_pig --fragLen 1000 --matrix #Para el cerdo
+time fastani --ql genome_list_PNH.txt --rl genome_list_PNH.txt -t 4 -o bifido_out_PNH --fragLen 1000 --matrix #Para los primates no humanos
+```
+
+## Filtrado ANI Humano con R
+
+A continuación, se muestran los pasos para filtrar las muestras de las diferentes especies de *Bifidobacterium spp* a partir de las secuencias completas de bacterias extraidas del humano.
+
+```{r Inicio}
+BVBRC_genome <- read.delim("/Users/toni/Desktop/TFM_BioInfo/files/BVBRC_genome.txt", quote="")
+bifido_out <- read.delim("/Users/toni/Desktop/TFM_BioInfo/files/bifido_out_822", header=FALSE)
+```
+
+## Cargamos librerias
+
+
+```{r Librerias, warning=FALSE,message=FALSE}
+library("reshape2")
+#library("ComplexHeatmap")
+library(ggplot2)
+library("gplots")
+library(dplyr)
+library("vioplot")
+```
+
+## Generamos Matriz
+Cargamos los datos obtenidos por el programa FastANI y los pasamos a una matriz
+```{r Cargar datos}
+x <- bifido_out #Generamos una variable con los datos
+pre_matrix <- acast(x, V1~V2, value.var="V3")# Creamos la matriz de los datos
+pre_matrix[is.na(pre_matrix)] <- 70 #Los datos con NA los pasamos a 70
+```
+
+
+## Poner nombre especies en las columnas
+```{r}
+matrix<- pre_matrix
+count=0
+for (i in colnames(matrix)) {
+  count=count+1
+  NewName<-substring(i,first = 12, last = nchar(i)-4 )#quitamos los 12 primeros caracteres "genome_fna/" y los ultimos 4 ".fna"
+  colnames(matrix)[count]<-c(NewName)
+  for (i in 1:nrow(BVBRC_genome)) {
+    z<-substring(BVBRC_genome$Genome.ID[i],first = 2, last = nchar(BVBRC_genome$Genome.ID[i])-1 )
+    
+    if (colnames(matrix)[count] == z ){
+      colnames(matrix)[count]<-c(BVBRC_genome$Genome.Name[i])
+      row.names(matrix)[count]<-c(BVBRC_genome$Genome.Name[i])
+    }
+  }
+}
+```
+
+
+## Generar otra matriz pero con los ID
+```{r, echo=TRUE}
+matrix_ID<- pre_matrix
+count=0
+for (i in colnames(matrix_ID)) {
+  count=count+1
+  NewName<-substring(i,first = 12, last = nchar(i)-4 )#quitamos los 12 primeros caracteres "genome_fna/" y los ultimos 4 ".fna"
+  colnames(matrix_ID)[count]<-c(NewName)
+  row.names(matrix_ID)[count]<-c(NewName)
+}
+```
+
+
+## Eliminar Col y filas de especeis y géneros no vinculados a Bifido
+Genero bucle para saber cuantas especies o géneros tengo que eliminar.
+Importante en caso de usa otra especie que no sea la Humana cambiar las especies de Bifido.
+
+```{r, echo=TRUE}
+count=0
+for (i in 1:nrow(matrix)) {
+  z<-row.names(matrix)[i]
+  name<- strsplit(z," ")
+  gg<- name[[1]][1]#Cogemos el genero
+  sp<- name[[1]][2]#Cogemos la especie
+  if ((z =="genome_fna/Lacto_324831.13.fna") || (z=="genome_fna/Escherichia_coli_str_K12_MG1655.fna")){
+    count=count+1
+  }
+  if ((!is.na(gg)) &((gg =="\"Enterococcus") || (gg=="\"Cutibacterium"))){
+    count=count+1
+  }
+  if ((!is.na(sp)) &((sp =="scardovii") || (sp=="gallicum") || (sp=="thermophilum"))){
+    count=count+1
+  }
+}
+
+```
+
+Ahora genermos un bucle para que elimine todas las especies o géneros que no tienen nada que ver con bifido
+```{r, echo=TRUE}
+
+
+lon=(nrow(matrix)-count)#Extraemos la longitud de la matriz sin las especie arriba eliminadas("count")
+
+while(nrow(matrix) > (lon)){
+  
+  for (i in 1:nrow(matrix)) {
+    z<-row.names(matrix)[i]
+    name<- strsplit(z," ")
+    gg<- name[[1]][1]#Cogemos el genero
+    sp<- name[[1]][2]#Cogemos la especie
+    if ((!is.na(z)) & ((z =="genome_fna/Lacto_324831.13.fna") || (z=="genome_fna/Escherichia_coli_str_K12_MG1655.fna"))){
+      matrix<- matrix[c(-i),]#Eliminamos la fila
+    }
+    if ((!is.na(gg)) & ((gg =="\"Enterococcus") || (gg=="\"Cutibacterium"))){
+      matrix<- matrix[c(-i),]
+    }
+    if ((!is.na(sp)) &((sp =="scardovii") || (sp=="gallicum") || (sp=="thermophilum"))){
+      matrix<- matrix[c(-i),]
+    }
+  }
+  for (i in 1:ncol(matrix)) { #Hacemos lo mismo pero para eliminar columnas
+    z<-colnames(matrix)[i]
+    name<- strsplit(z," ")
+    gg<- name[[1]][1]#Cogemos el genero
+    sp<- name[[1]][2]#Cogemos la especie
+    if ((!is.na(z)) & ((z =="Lacto_324831.13") || (z=="Escherichia_coli_str_K12_MG1655"))){#Aquí es diferente el nombre de las filas
+      matrix<- matrix[,c(-i)]#Eliminamos la columna
+    }
+    if ((!is.na(gg)) & ((gg =="\"Enterococcus") || (gg=="\"Cutibacterium"))){
+      matrix<- matrix[,c(-i)]
+    }
+    if ((!is.na(sp)) &((sp =="scardovii") || (sp=="gallicum") || (sp=="thermophilum"))){
+      matrix<- matrix[,c(-i)]
+    }
+  }
+}
+```
+
+## Asignar especies NO descritas
+Asignamos las especies que no estan descritas a las especies que tengan mayor similitud de ANI.
+Generamos una función que recorra cada posición de la columna y busque el mayor valor de ANI.
+
+```{r, echo=TRUE}
+funn <- function(matr,posfila) {
+  f_count=90
+  nann=c("tt")
+  final<-c("se asgina a")
+  for(y in 1:ncol(matr)){
+    z<-colnames(matrix)[y]
+    name<- strsplit(z," ")
+    
+    sp<- name[[1]][2]#Cogemos la especie
+    count<-matr[posfila,y]
+    if ((sp !="sp.")&(count>f_count)){
+      f_count<-matr[posfila,y]
+      nann<- replace(nann,1,z)
+    }
+  }
+  final<-append(final,c(nann,f_count))
+}
+```
+
+Cambiamos las especies detectadas *B.sp* por su especie con mayor ANI
+
+```{r}
+top<-c()
+cambio=3
+for(i in 1:nrow(matrix)){
+  b<-row.names(matrix)[i]
+  name<- strsplit(b," ")
+  sp<- name[[1]][2]#Cogemos la especie
+  if (sp =="sp."){
+    
+    a<- funn(matrix,i)#si queires saber todas las especies que se cambairan de sp. y los ANI
+    top<- append(top,c(b,a))
+    row.names(matrix)[i]<-paste(top[cambio],"Antes sp.",sep = "_")
+    colnames(matrix)[i]<-paste(top[cambio],"Antes sp.",sep = "_")
+    cambio<-cambio+4
+  }
+}
+
+#Esto es un ejemplo de los cambios generados de la especie sp. por el resto
+print(top[1:3])
+```
+
+
+## Reasignar especies
+
+Para unificar especies, antes se deben obtener las distribuciones de ANI intra-especie,es decir, para cada especie analizada se deben rescatar todos los ANIs resultantes de las comparaciones entre sus cepas. Así obtendrás medias, medianas y desviaciones (además IQR o CI95%) para cada especie. 
+
+```{r, echo=TRUE}
+#Volvemos a observar que ya solo tenemos las especies que nos interesan
+lista_especies=c()
+lista_generos=c()
+lista_posicion_especie=c()# Guardamos la lista con las posiciones encontradas para utilizarla después
+count=0
+for (i in colnames(matrix)) {
+  count=count+1
+  name<- strsplit(i," ")
+  
+  yy<- name[[1]][1]#Cogemos el genero
+  xx<- name[[1]][2]#Cogemos la especie
+  if (!(yy %in% lista_generos)){
+    lista_generos<- append(lista_generos,yy)
+  }
+  if ((yy== "\"Bifidobacterium") & (!(xx %in% lista_especies))){
+    lista_especies<- append(lista_especies,xx)
+    lista_posicion_especie<- append(lista_posicion_especie,count)
+  }
+}
+
+print(lista_especies)
+print(lista_generos)
+```
+
+
+## Comparaciones estadísticas
+
+### PASO 1.1: 
+Primero obtenemos las distribuciones de ANI INTRA-especie y con ello vemos el intervalo de confianza para cada especie
+
+GENERAMOS LA MATRIZ donde rellenar los valores estadísticos obtenidos de cada especie
+```{r, echo=TRUE}
+col_especies<- lista_especies
+filas_stats<-c("Tamaño_N","Media_ANI_intra","Desviación","CI 95%","Mínimo")
+matriz_stat_intra<-matrix(0,ncol = length(col_especies),nrow=length(filas_stats))
+colnames(matriz_stat_intra)<-col_especies;rownames(matriz_stat_intra)<- filas_stats
+matriz_stat_inter<-matriz_stat_intra
+row.names(matriz_stat_inter)[2]<-"media_ANI_inter"
+#Creamos una función que analizará CI 95%.
+CI_z <- function (x, ci = 0.95)#calculamos con z-tablas porque conocemos la desviación y n>30
+{
+  standard_deviation <- sd(x)
+  sample_size <- length(x)
+  Margin_Error <- abs(qnorm((1-ci)/2))* standard_deviation/sqrt(sample_size)
+  df_out <- data.frame( sample_size=length(x), Mean=mean(x), sd=sd(x),
+                        Margin_Error=Margin_Error,
+                        CI_inferior=(mean(x) - Margin_Error),
+                        CI_superior=(mean(x) + Margin_Error),
+                        Min=min(x))
+  return(df_out)
+}
+```
+
+Generamos el bucle para rellenar la matriz.
+Además, obtenemos las gráficas donde se pueden observar la distribución de los ANI para cada especie lo que permite visualmente observar si hay algún organismo que no forma parte de ese mismo grupo de especie.
+```{r, echo=TRUE}
+conter=0
+for (i in colnames(matriz_stat_intra)){
+  conter=conter+1
+  lista_pos_matrix<-c()
+  count=0
+  for (y in colnames(matrix)) {
+    count=count+1
+    name<- strsplit(y," ")
+    sp<- name[[1]][2]#Cogemos la especie
+    if (i==sp){#esta condición para guardar las especies que sean iguales(intra-especie).
+      lista_pos_matrix<-append(lista_pos_matrix,count)
+      
+    }
+  }
+  
+  print(i)
+  newmatrix<-matrix[lista_pos_matrix,lista_pos_matrix]
+  valor<-CI_z(newmatrix)
+  matriz_stat_intra[1,conter]<-valor$sample_size
+  matriz_stat_intra[2,conter]<-valor$Mean
+  matriz_stat_intra[3,conter]<-valor$sd
+  CI_95<- as.character(paste(valor$CI_inferior,valor$CI_superior, sep = "-"))
+  matriz_stat_intra[4,conter]<-CI_95
+  matriz_stat_intra[5,conter]<-valor$Min
+  if (i!="stercoris"){#Quitamos la especie estercolis porque solo tiene 1 dato daría error en el plot
+    plot(density(newmatrix),main = i)
+    #vioplot(newmatrix,xlab = i, ylab = "Valor_ANI")
+  }
+}
+```
+
+### PASO 1.2: 
+En segundo lugar, obtenemos las distribuciones de ANI INTER-especie y con ello vemos el intervalo de confianza para cada especie.El mecanismo es el mismo pero los valores de las filas se eliminarán por las que sean diferentes a la especie.
+
+```{r, echo=TRUE}
+conter=0
+for (i in colnames(matriz_stat_inter)){
+  conter=conter+1
+  lista_pos_matrix<-c()
+  count=0
+  for (y in colnames(matrix)) {
+    count=count+1
+    name<- strsplit(y," ")
+    sp<- name[[1]][2]#Cogemos la especie
+    if (i==sp){#mantenemos esta condición pero después eliminamos las filas recogidas.
+      lista_pos_matrix<-append(lista_pos_matrix,count)
+      
+    }
+  }
+  print(i)
+  newmatrix<-matrix[(lista_pos_matrix)*-1,lista_pos_matrix]#Quitamos las filas iguales y nos quedamos con las no recogidas
+  valor<-CI_z(newmatrix)
+  matriz_stat_inter[1,conter]<-valor$sample_size
+  matriz_stat_inter[2,conter]<-valor$Mean
+  matriz_stat_inter[3,conter]<-valor$sd
+  CI_95<- as.character(paste(valor$CI_inferior,valor$CI_superior, sep = "-"))
+  matriz_stat_inter[4,conter]<-CI_95
+  matriz_stat_inter[5,conter]<-valor$Min
+  #plot(density(newmatrix),main = i)
+}
+```
+
+
+### PASO 2:
+Ahora observamos si los valores ANI intra e inter se acercan a los establecido en el artículo.
+Sacamos las medias de cada matriz.
+```{r, echo=TRUE}
+#Intra
+library(kableExtra)
+
+matriz_stat_intra %>% kbl()
+ANI_Intra<- matriz_stat_intra[2,]
+mean(as.numeric(ANI_Intra))
+
+#Inter
+matriz_stat_inter %>%
+  kbl()
+ANI_Inter<- matriz_stat_inter[2,]
+mean(as.numeric(ANI_Inter))
+dim(matrix)
+```
+
+Solo B.animalis muestra una relación de ANI inter-especie menor al 80%
+```{r, echo=TRUE}
+matriz_stat_inter[,3]
+```
+
+
+### PASO 3:
+Realizamos una comparativa de distribuciones ANI de todos contra todos para poder unificar especies
+
+Creamos la matriz de todos contra todos
+
+```{r, echo=TRUE}
+matriz_stat_Todos<-matrix(0,ncol = length(col_especies),nrow=length(col_especies))
+colnames(matriz_stat_Todos)<-col_especies;rownames(matriz_stat_Todos)<-col_especies
+```
+
+Debido a que hay que recorrer 2 matrices y filas y columnas computacionalmente el coste es muy alto.
+Para evitar esto, extraeremos los índices de cada especie en la matriz
+
+```{r, echo=TRUE}
+lista_indices<-c()
+lista_indices_pos_especie<-c()
+count=0
+for (nombre in colnames(matriz_stat_Todos)){
+  for (i in 1:ncol(matrix)){
+    b<-colnames(matrix)[i]
+    name<- strsplit(b," ")
+    sp<- name[[1]][2]#Cogemos la especie
+    if (sp == nombre){
+      count=count+1
+      lista_indices<- append(lista_indices,i)
+    }
+  }
+  lista_indices_pos_especie<-append(lista_indices_pos_especie,c(nombre,count))
+}
+
+lista_indices_pos_especie#Vemos la especie junto con su posición final dentro de la lista_indices(contiene los indices)
+```
+Se muestra la lista con la especie y el número acompañante es la posición de indices de cada especie en la lista de 
+"lista_indices".
+
+Ahora que tenemos los indices de cada especie generamos la matriz de todos contra todos.
+```{r, echo=TRUE}
+pos_i=0
+ini_fil=1
+a_fil=2
+for (i in row.names(matriz_stat_Todos)){
+  pos_i=pos_i+1
+  pos_y=0
+  ini_col=1
+  a_col=2
+  
+  for (y in colnames(matriz_stat_Todos)) {
+    
+    pos_y=pos_y+1
+    newmatrix<-matrix[lista_indices[ini_fil:(as.numeric(lista_indices_pos_especie[a_fil]))],lista_indices[ini_col:(as.numeric(lista_indices_pos_especie[a_col]))]]
+    matriz_stat_Todos[pos_i,pos_y]<-mean(newmatrix)
+    ini_col=1+as.numeric(lista_indices_pos_especie[a_col])
+    a_col=a_col+2
+  }
+  ini_fil=1+as.numeric(lista_indices_pos_especie[a_fil])
+  a_fil=a_fil+2
+}
+```
+
+Observamos las relaciones de cada especie con heatmap
+```{r, echo=TRUE}
+#Generamos el heatmap 
+matriz_stat_Todos_heatmap<-matriz_stat_Todos
+row.names(matriz_stat_Todos_heatmap)<- c("B.breve","B.kashiwanohense","B.animalis","B.bifidum","B.adolescentis","B.longum","B.pseudocatenulatum","B.pseudolongum","B.angulatum","B.catenulatum","B.dentium","B.stercoris")
+colnames(matriz_stat_Todos_heatmap)<- c("B.breve","B.kashiwanohense","B.animalis","B.bifidum","B.adolescentis","B.longum","B.pseudocatenulatum","B.pseudolongum","B.angulatum","B.catenulatum","B.dentium","B.stercoris")
+heatmap(matriz_stat_Todos_heatmap,margins =c(10,9) )
+```
+
+Ahora observamos que especies deben de unificarse atendiendo al valor de ANI.
+SI el valor de ANI >95% se deben unificar en la misma especie y sin ANI está >90 y <95 tienen proximidad filogenética
+```{r, echo=TRUE}
+for ( i in 1: nrow(matriz_stat_Todos)){
+  for ( j in 1:ncol(matriz_stat_Todos)){
+    if ((matriz_stat_Todos[i,j] > 95) & (i!=j)){
+      print("LA especie:  ")
+      print(row.names(matriz_stat_Todos)[i])
+      print("se debería de unifcar con la especie  ")
+      print(colnames(matriz_stat_Todos)[j])
+      print(".................")
+    }
+    if ((matriz_stat_Todos[i,j] > 90) & (matriz_stat_Todos[i,j] < 95)){
+      print("LA especie:  ")
+      print(row.names(matriz_stat_Todos)[i])
+      print("tiene mucha proximidad a   ")
+      print(colnames(matriz_stat_Todos)[j])
+      print("Valor de ANI:")
+      print(matriz_stat_Todos[i,j])
+      print(".................")
+    }
+  }
+}
+```
+El resultado muestra que la especie estercolis se debe reunificar con adolescentis.
+Además, vemos como kashiwanohense y catenulatum tienen una ANI de casi 95 por lo que también las reunificaremos.
+
+# Unir Especies
+
+## Antes de unir especies vamos a eliminar las especies con ANI interespecie < 95.
+Para ello, creamos una función que recorra la matriz original en busca de los organismos que tengan un valor interespecie de <94
+```{r}
+fun_kill<- function(lista_1,lista_2){
+  lista_rechazos<-c()
+  for (i in lista_2[1]){
+    i<-as.numeric(i)
+    for (j in lista_2){
+      j<-as.numeric(j)
+      N<-matrix[i,j]
+      if (lista_1[1]!="stercoris"){#Al estar solo esa especie da error, pero la quitamos porque más adelante la reunificaremos
+        if (N< 93.89){#Uso un corte de 93.89 porque hay una kahawensis reunificada (antes era una "sp") que tiene 93.9 de ANI.
+          lista_rechazos<-append(lista_rechazos,c(lista_1[1],j))
+        }
+      }
+    }
+  }
+  return(lista_rechazos)
+}
+
+#Prueba de que funciona
+#a=11
+#prueba1<-lista_indices_pos_especie[a:(a+1)]
+#prueba2<-lista_indices[331:696]
+#i<-fun_kill(prueba1,prueba2)
+#i
+
+```
+Ahora generamos un bucle que busque para todas las especies los organismos que no pertenecen a ella.
+```{r}
+lista_kill_end<-c()
+a=1
+pos=1
+for (i in colnames(matriz_stat_intra)){
+  lista_kill_end<-append(lista_kill_end,fun_kill(lista_indices_pos_especie[a:(a+1)],lista_indices[pos:(as.numeric(lista_indices_pos_especie[(a+1)]))]))
+  print(pos)
+  pos=1+as.numeric(lista_indices_pos_especie[a+1])
+  a=a+2
+}
+lista_kill_end
+colnames(matrix)[as.numeric(lista_kill_end[2])]
+colnames(matrix)[as.numeric(lista_kill_end[4])]
+```
+Observamos que la posición 482 y 483 de la especie B.longum no pertenecen a dicha especie
+
+
+
+## Unimos especies
+Unimos las especies Stercolis con adolescentis y Kashiwanesis con Catenolatum.
+
+B.kashiwanesis aparece en la bibliografia como una subespecie de B.catenulatum (https://www.ncbi.nlm.nih.gov/Taxonomy/Browser/wwwtax.cgi?mode=Info&id=1150460)por lo que cambiaremos el nombre de estas especies a catenulatum.
+
+
+```{r}
+lista_cambio<-c("kashiwanohense","stercoris")
+#matrix_ZZ<-matrix
+pos=1
+a=1
+for (i in 1:ncol(matriz_stat_inter)){
+  if (lista_cambio[1]==lista_indices_pos_especie[pos]){#comprobar kashiwanohense
+    print("entra")
+    for (x in lista_indices[101:104]){#poner los indces de la especie kashiwanohense
+      print("entra_1")
+      fin_name<-paste("\"Bifidobacterium catenulatum "," _Antes_kashiwanohense\"",sep = "_")
+      row.names(matrix)[x]<-paste(fin_name,a,sep = "_")
+      colnames(matrix)[x]<-paste(fin_name,a,sep = "_")
+      print(x)
+      a=a+1
+    }
+  }
+  if (lista_cambio[2]==lista_indices_pos_especie[pos]){
+    print("Entra2")
+    b=1
+    fin_name<-paste("\"Bifidobacterium adolescentis "," _Antes_stercoris\"",sep = "_")
+    row.names(matrix)[793]<-paste(fin_name,b,sep = "_")
+    colnames(matrix)[793]<-paste(fin_name,b,sep = "_")
+  
+  }
+  pos=pos+2
+}
+
+#Comprobar que ha ido bien
+#colnames(matrix)[4]
+#colnames(matrix_ZZ)[4]
+#colnames(matrix)[793]
+#colnames(matrix_ZZ)[793]
+```
+
+Después de reunificar especies actualizamos la matriz eliminado las especies de B.longum
+```{r}
+matrix<-matrix[-c(482,483),-c(482,483)]
+dim(matrix)
+```
+
+## Comprobar que los cambios han modificado los valores intraespecies
+
+Actualizamos las listas de especies a partir de la nueva matriz limpia
+
+```{r}
+##PASO 1: Generar listas con las especies filtradas
+lista_especies=c()
+lista_generos=c()
+lista_posicion_especie=c()# Guardamos la lista con las posiciones encontradas para utilizarla después
+count=0
+for (i in colnames(matrix)) {####
+  count=count+1
+  name<- strsplit(i," ")
+  
+  yy<- name[[1]][1]#Cogemos el genero
+  xx<- name[[1]][2]#Cogemos la especie
+  if (!(yy %in% lista_generos)){
+    lista_generos<- append(lista_generos,yy)
+  }
+  if ((yy== "\"Bifidobacterium") & (!(xx %in% lista_especies))){
+    lista_especies<- append(lista_especies,xx)
+    lista_posicion_especie<- append(lista_posicion_especie,count)
+  }
+}
+
+print(lista_especies)
+print(lista_generos)
+
+##PASO 2: Volvemos a generar la matriz intraespecie
+
+col_especies<- lista_especies
+filas_stats<-c("Tamaño_N","media_ANI_intra","desviación","CI 95%","Minimo")
+matriz_stat_intra<-matrix(0,ncol = length(col_especies),nrow=length(filas_stats))
+colnames(matriz_stat_intra)<-col_especies;rownames(matriz_stat_intra)<- filas_stats
+matriz_stat_inter<-matriz_stat_intra
+
+
+##PASO 3.1: Rellenamos la matriz intra-especie
+
+conter=0
+for (i in colnames(matriz_stat_intra)){
+  conter=conter+1
+  lista_pos_matrix<-c()
+  count=0
+  for (y in colnames(matrix)) {#####
+    count=count+1
+    name<- strsplit(y," ")
+    sp<- name[[1]][2]#Cogemos la especie
+    if (i==sp){#esta condición para guardar las especies que sean iguales(intra-especie).
+      lista_pos_matrix<-append(lista_pos_matrix,count)
+      
+    }
+  }
+  
+  print(i)
+  newmatrix<-matrix[lista_pos_matrix,lista_pos_matrix]####
+  valor<-CI_z(newmatrix)
+  matriz_stat_intra[1,conter]<-valor$sample_size
+  matriz_stat_intra[2,conter]<-valor$Mean
+  matriz_stat_intra[3,conter]<-valor$sd
+  CI_95<- as.character(paste(valor$CI_inferior,valor$CI_superior, sep = "-"))
+  matriz_stat_intra[4,conter]<-CI_95
+  matriz_stat_intra[5,conter]<-valor$Min
+  #plot(density(newmatrix),main = i)
+}
+##PASO 3.2: Rellenamos la matriz inter-especie
+conter=0
+for (i in colnames(matriz_stat_inter)){
+  conter=conter+1
+  lista_pos_matrix<-c()
+  count=0
+  for (y in colnames(matrix)) {
+    count=count+1
+    name<- strsplit(y," ")
+    sp<- name[[1]][2]#Cogemos la especie
+    if (i==sp){#mantenemos esta condición pero después eliminamos las filas recogidas.
+      lista_pos_matrix<-append(lista_pos_matrix,count)
+      
+    }
+  }
+  print(i)
+  newmatrix<-matrix[(lista_pos_matrix)*-1,lista_pos_matrix]#Quitamos las filas iguales y nos quedamos con las no recogidas
+  valor<-CI_z(newmatrix)
+  matriz_stat_inter[1,conter]<-valor$sample_size
+  matriz_stat_inter[2,conter]<-valor$Mean
+  matriz_stat_inter[3,conter]<-valor$sd
+  CI_95<- as.character(paste(valor$CI_inferior,valor$CI_superior, sep = "-"))
+  matriz_stat_inter[4,conter]<-CI_95
+  matriz_stat_inter[5,conter]<-valor$Min
+  #plot(density(newmatrix),main = i)
+}
+
+#PASO 4.1: Generamos la matriz todos contra todos
+matriz_stat_Todos<-matrix(0,ncol = length(col_especies),nrow=length(col_especies))
+colnames(matriz_stat_Todos)<-col_especies;rownames(matriz_stat_Todos)<-col_especies
+
+#PASO 4.2: Generamos la listas con los nuevos indices
+lista_indices<-c()
+lista_indices_pos_especie<-c()
+count=0
+for (nombre in colnames(matriz_stat_Todos)){
+  for (i in 1:ncol(matrix)){
+    b<-colnames(matrix)[i]
+    name<- strsplit(b," ")
+    sp<- name[[1]][2]#Cogemos la especie
+    if (sp == nombre){
+      count=count+1
+      lista_indices<- append(lista_indices,i)
+    }
+  }
+  lista_indices_pos_especie<-append(lista_indices_pos_especie,c(nombre,count))
+}
+
+lista_indices_pos_especie#Vemos la especie junt
+
+
+#PASO 4.3: Eellenamos la matriz todos contra todos (matriz_stat_Todos)
+
+pos_i=0
+ini_fil=1
+a_fil=2
+for (i in row.names(matriz_stat_Todos)){
+  pos_i=pos_i+1
+  pos_y=0
+  ini_col=1
+  a_col=2
+  
+  for (y in colnames(matriz_stat_Todos)) {
+    
+    pos_y=pos_y+1
+    newmatrix<-matrix[lista_indices[ini_fil:(as.numeric(lista_indices_pos_especie[a_fil]))],lista_indices[ini_col:(as.numeric(lista_indices_pos_especie[a_col]))]]
+    matriz_stat_Todos[pos_i,pos_y]<-mean(newmatrix)
+    ini_col=1+as.numeric(lista_indices_pos_especie[a_col])
+    a_col=a_col+2
+  }
+  ini_fil=1+as.numeric(lista_indices_pos_especie[a_fil])
+  a_fil=a_fil+2
+}
+
+#Se muestra la tabla intraespecie final
+matriz_stat_intra %>% kbl()
+```
+
+
+
+```{r}
+#PASO 5: Mostramos la relación de la matriz todos contra todos con un heatmap
+
+matriz_stat_Todos_heatmap<-matriz_stat_Todos
+row.names(matriz_stat_Todos_heatmap)<- c("B.breve","B.catenulatum","B.animalis","B.bifidum","B.adolescentis","B.longum","B.pseudocatenulatum","B.pseudolongum","B.angulatum","B.dentium")
+colnames(matriz_stat_Todos_heatmap)<- c("B.breve","B.catenulatum","B.animalis","B.bifidum","B.adolescentis","B.longum","B.pseudocatenulatum","B.pseudolongum","B.angulatum","B.dentium")
+heatmap(matriz_stat_Todos_heatmap,margins =c(10.5,9) )
+
+
+```
+
+
+
+## Generamos un data frame con los valores interespecies para poder representar un violinplot
+
+Para el data frame generamos unas listas con cada valor de ANI intra-especie 
+
+```{r}
+#generar violin plot
+breve<-c()
+bifidum<-c()
+animalis<-c()
+catenulatum<-c()
+adolescentis<-c()
+longum<-c()
+pseudocatenulatum<-c()
+pseudolongum<-c()
+angulatum<-c()
+dentium<-c()
+
+lista_indices_pos_especie
+pos=0
+for (i in lista_indices){
+  pos=pos+1
+  if (pos<=100){
+    breve<-append(breve,matrix[lista_posicion_especie[1],i])#Una es la posición de breve
+  }
+  if ((pos>100)&(pos<=111)){
+    catenulatum<-append(catenulatum,matrix[lista_posicion_especie[2],i])#Una es la posición de catenulatum
+  }
+  if ((pos>111)&(pos<=149)){
+    animalis<-append(animalis,matrix[lista_posicion_especie[3],i])#Una es la posición de catenulatum
+  }
+  if ((pos>149)&(pos<=252)){
+    bifidum<-append(bifidum,matrix[lista_posicion_especie[4],i])#Una es la posición de catenulatum
+  }
+  if ((pos>252)&(pos<=338)){
+    adolescentis<-append(adolescentis,matrix[lista_posicion_especie[5],i])#Una es la posición de breve
+  }
+  if ((pos>338)&(pos<=702)){
+    longum<-append(longum,matrix[lista_posicion_especie[6],i])#Una es la posición de catenulatum
+  }
+  if ((pos>702)&(pos<=772)){
+    pseudocatenulatum<-append(pseudocatenulatum,matrix[lista_posicion_especie[7],i])#Una es la posición de catenulatum
+  }
+  if ((pos>772)&(pos<=774)){
+    pseudolongum<-append(pseudolongum,matrix[lista_posicion_especie[8],i])#Una es la posición de catenulatum
+  }
+  if ((pos>774)&(pos<=777)){
+    angulatum<-append(angulatum,matrix[lista_posicion_especie[9],i])#Una es la posición de catenulatum
+  }
+  if ((pos>777)&(pos<=800)){
+    dentium<-append(dentium,matrix[lista_posicion_especie[10],i])#Una es la posición de catenulatum
+  }
+}
+
+
+```
+
+## Generar el violinplot
+
+```{r}
+#df_violin<-data_frame(breve,catenulatum,animalis,bifidum,adolescentis,longum,pseudocatenulatum,pseudolongum,angulatum,dentium)
+
+# PASO 1: EXTRAEMOS LA LONGITUD 
+max_length <- max(c(length(breve), length(catenulatum),length(animalis), length(bifidum),length(adolescentis), length(longum),length(pseudocatenulatum), length(pseudolongum),length(angulatum), length(dentium)))
+max_length
+
+df_puebar <- data.frame(breve = c(breve,                 # Create data frame with unequal vectors
+                            rep(NA, max_length - length(breve))),
+                   catenulatum = c(catenulatum,
+                            rep(NA, max_length - length(catenulatum))))
+#t()
+l<-list(breve,catenulatum,animalis,bifidum,adolescentis,longum,pseudocatenulatum,pseudolongum,angulatum,dentium)
+vioplot::vioplot(l,names=c("B.breve","B.catenulatum","B.animalis","B.bifidum","B.adolescentis","B.longum","B.pseudocatenulatum","B.pseudolongum","B.angulatum","B.dentium"),col=c("orange","yellow"),ylab="Valor ANI intraespecie",las=2.1, cex.lab=1, cex.axis=1, font=1,col.axis="black",bandwidth = 0.2, adjust = 2)
+
+```
+
+
+
+
+
+
