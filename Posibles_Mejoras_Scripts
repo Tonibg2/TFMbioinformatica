@@ -1,0 +1,11 @@
+#Posibles mejoras para el script de R#
+
+<- Mejorar el rendimiento, esta claro que se puede mejorar y mucho. XD
+
+<- se podría cambiar la linea 82 (pre_matrix[is.na(pre_matrix)] <- 70) por directamente eliminar los genomas que sean NA.
+
+<-Para facilitar el trabajo, en lugar de trabajar con matriz, como yo, se podría pasar a data frame todo. Se podría empezar ordenando la matriz por nombre y después recorreria y guardarlo en data frame para intraespecie y otro data frame para interespecice.
+
+<- Las lineas 356-360 están mal optimizadas, tarda un huevo generar el dataframe según lo he programado, seguro que se puede optimizar. Lo mismo para las lineas 823-827.
+
+<- faltaría añadir un script que clasifique los nombres de las especies y guarde todos los "Genome ID" para luego poder agrupar los genomas según su especié en el estudio del pangenoma.
