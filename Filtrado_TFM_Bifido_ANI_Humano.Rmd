@@ -70,6 +70,8 @@ library(ggplot2)
 library("gplots")
 library(dplyr)
 library("vioplot")
+library(ggridges)
+library(kableExtra)
 ```
 
 ## Generamos Matriz
@@ -265,7 +267,7 @@ Primero obtenemos las distribuciones de ANI INTRA-especie y con ello vemos el in
 GENERAMOS LA MATRIZ donde rellenar los valores estadísticos obtenidos de cada especie
 ```{r, echo=TRUE}
 col_especies<- lista_especies
-filas_stats<-c("Tamaño_N","Media_ANI_intra","Desviación","CI 95%","Mínimo")
+filas_stats<-c("Tamaño_N","Media_ANI_intra","Desviación","CI 95%","Mínimo","Mediana","Cuartil1","Cuartil3")
 matriz_stat_intra<-matrix(0,ncol = length(col_especies),nrow=length(filas_stats))
 colnames(matriz_stat_intra)<-col_especies;rownames(matriz_stat_intra)<- filas_stats
 matriz_stat_inter<-matriz_stat_intra
@@ -280,14 +282,20 @@ CI_z <- function (x, ci = 0.95)#calculamos con z-tablas porque conocemos la desv
                         Margin_Error=Margin_Error,
                         CI_inferior=(mean(x) - Margin_Error),
                         CI_superior=(mean(x) + Margin_Error),
-                        Min=min(x))
+                        Min=min(x),
+                        Mediana=median(x),
+                        Cuartil1= quantile(x, probs = 0.25),
+                        Cuartil3= quantile(x, probs = 0.75))
+  
   return(df_out)
 }
 ```
 
+
 Generamos el bucle para rellenar la matriz.
 Además, obtenemos las gráficas donde se pueden observar la distribución de los ANI para cada especie lo que permite visualmente observar si hay algún organismo que no forma parte de ese mismo grupo de especie.
 ```{r, echo=TRUE}
+
 conter=0
 for (i in colnames(matriz_stat_intra)){
   conter=conter+1
@@ -312,12 +320,69 @@ for (i in colnames(matriz_stat_intra)){
   CI_95<- as.character(paste(valor$CI_inferior,valor$CI_superior, sep = "-"))
   matriz_stat_intra[4,conter]<-CI_95
   matriz_stat_intra[5,conter]<-valor$Min
+  matriz_stat_intra[6,conter]<-valor$Mediana
+  matriz_stat_intra[7,conter]<-valor$Cuartil1
+  matriz_stat_intra[8,conter]<-valor$Cuartil3
   if (i!="stercoris"){#Quitamos la especie estercolis porque solo tiene 1 dato daría error en el plot
     plot(density(newmatrix),main = i)
     #vioplot(newmatrix,xlab = i, ylab = "Valor_ANI")
+  
   }
 }
 ```
+
+### PASO 1.1.1:
+Generamos una dataframe con los valores obtenidos intraespecie
+```{r, echo=TRUE}
+#Tarda unos 10 min porque no lo tengo optimizado :)
+data_fila=0
+df_intra_ANI<-data_frame("Especie"=character(),"Valor_ANI"=numeric())
+conter=0
+for (i in colnames(matriz_stat_intra)){
+  conter=conter+1
+  lista_pos_matrix<-c()
+  count=0
+  for (y in colnames(matrix)) {
+    count=count+1
+    name<- strsplit(y," ")
+    sp<- name[[1]][2]#Cogemos la especie
+    if (i==sp){#esta condición para guardar las especies que sean iguales(intra-especie).
+      lista_pos_matrix<-append(lista_pos_matrix,count)
+      
+    }
+  }
+  
+  print(i)
+  newmatrix<-matrix[lista_pos_matrix,lista_pos_matrix]
+  for (j in newmatrix){
+    data_fila=data_fila+1
+    df_intra_ANI[data_fila,1]<- i
+    df_intra_ANI[data_fila,2]<- as.numeric(j)}
+  
+}
+
+#Genero los density plots una vez tengo el data frame
+ggplot(df_intra_ANI, aes(x = Valor_ANI, y = Especie, group = Especie)) + 
+  geom_density_ridges(fill = "#00AFBB")
+
+ggplot(df_intra_ANI, aes(x = Valor_ANI, y = Especie,, fill = factor(stat(quantile)))) +
+  stat_density_ridges(
+    geom = "density_ridges_gradient", calc_ecdf = TRUE,
+    quantiles = 4, quantile_lines = TRUE
+  ) +
+  scale_fill_viridis_d(name = "Quartiles")
+
+#Esto es para cambair el nombre de las especies en el dataframe
+#count=0
+#for ( i in df_intra_ANI$Especie){
+  #count=count+1
+  #z=paste("B.",i,sep = "")
+  #df_intra_ANI[count,1]<-z
+#}
+
+
+```
+
 
 ### PASO 1.2: 
 En segundo lugar, obtenemos las distribuciones de ANI INTER-especie y con ello vemos el intervalo de confianza para cada especie.El mecanismo es el mismo pero los valores de las filas se eliminarán por las que sean diferentes a la especie.
@@ -346,6 +411,9 @@ for (i in colnames(matriz_stat_inter)){
   CI_95<- as.character(paste(valor$CI_inferior,valor$CI_superior, sep = "-"))
   matriz_stat_inter[4,conter]<-CI_95
   matriz_stat_inter[5,conter]<-valor$Min
+  matriz_stat_inter[6,conter]<-valor$Mediana
+  matriz_stat_inter[7,conter]<-valor$Cuartil1
+  matriz_stat_inter[8,conter]<-valor$Cuartil3
   #plot(density(newmatrix),main = i)
 }
 ```
@@ -356,13 +424,13 @@ Ahora observamos si los valores ANI intra e inter se acercan a los establecido e
 Sacamos las medias de cada matriz.
 ```{r, echo=TRUE}
 #Intra
-library(kableExtra)
-
+print("Matriz_Intra")
 matriz_stat_intra %>% kbl()
 ANI_Intra<- matriz_stat_intra[2,]
 mean(as.numeric(ANI_Intra))
 
 #Inter
+print("Matriz_Inter")
 matriz_stat_inter %>%
   kbl()
 ANI_Inter<- matriz_stat_inter[2,]
@@ -598,7 +666,7 @@ print(lista_generos)
 ##PASO 2: Volvemos a generar la matriz intraespecie
 
 col_especies<- lista_especies
-filas_stats<-c("Tamaño_N","media_ANI_intra","desviación","CI 95%","Minimo")
+filas_stats<-c("Tamaño_N","media_ANI_intra","desviación","CI 95%","Minimo","Mediana","Q1","Q3")
 matriz_stat_intra<-matrix(0,ncol = length(col_especies),nrow=length(filas_stats))
 colnames(matriz_stat_intra)<-col_especies;rownames(matriz_stat_intra)<- filas_stats
 matriz_stat_inter<-matriz_stat_intra
@@ -630,6 +698,9 @@ for (i in colnames(matriz_stat_intra)){
   CI_95<- as.character(paste(valor$CI_inferior,valor$CI_superior, sep = "-"))
   matriz_stat_intra[4,conter]<-CI_95
   matriz_stat_intra[5,conter]<-valor$Min
+  matriz_stat_intra[6,conter]<-valor$Mediana
+  matriz_stat_intra[7,conter]<-valor$Cuartil1
+  matriz_stat_intra[8,conter]<-valor$Cuartil3
   #plot(density(newmatrix),main = i)
 }
 ##PASO 3.2: Rellenamos la matriz inter-especie
@@ -656,6 +727,9 @@ for (i in colnames(matriz_stat_inter)){
   CI_95<- as.character(paste(valor$CI_inferior,valor$CI_superior, sep = "-"))
   matriz_stat_inter[4,conter]<-CI_95
   matriz_stat_inter[5,conter]<-valor$Min
+  matriz_stat_inter[6,conter]<-valor$Mediana
+  matriz_stat_inter[7,conter]<-valor$Cuartil1
+  matriz_stat_inter[8,conter]<-valor$Cuartil3
   #plot(density(newmatrix),main = i)
 }
 
@@ -708,6 +782,7 @@ for (i in row.names(matriz_stat_Todos)){
 
 #Se muestra la tabla intraespecie final
 matriz_stat_intra %>% kbl()
+matriz_stat_inter %>% kbl()
 ```
 
 
@@ -720,6 +795,57 @@ row.names(matriz_stat_Todos_heatmap)<- c("B.breve","B.catenulatum","B.animalis",
 colnames(matriz_stat_Todos_heatmap)<- c("B.breve","B.catenulatum","B.animalis","B.bifidum","B.adolescentis","B.longum","B.pseudocatenulatum","B.pseudolongum","B.angulatum","B.dentium")
 heatmap(matriz_stat_Todos_heatmap,margins =c(10.5,9) )
 
+
+```
+
+
+## Generamos un data frame con los valores intraespecies para poder representar un densityplot conjunto
+```{r, echo=TRUE}
+#Tarda unos 10 min porque no lo tengo optimizado :)
+data_fila=0
+df_intra_ANI_fil<-data_frame("Especie"=character(),"Valor_ANI"=numeric())
+conter=0
+for (i in colnames(matriz_stat_intra)){
+  conter=conter+1
+  lista_pos_matrix<-c()
+  count=0
+  for (y in colnames(matrix)) {
+    count=count+1
+    name<- strsplit(y," ")
+    sp<- name[[1]][2]#Cogemos la especie
+    if (i==sp){#esta condición para guardar las especies que sean iguales(intra-especie).
+      lista_pos_matrix<-append(lista_pos_matrix,count)
+      
+    }
+  }
+  
+  print(i)
+  newmatrix<-matrix[lista_pos_matrix,lista_pos_matrix]
+  for (j in newmatrix){
+    data_fila=data_fila+1
+    df_intra_ANI_fil[data_fila,1]<- i
+    df_intra_ANI_fil[data_fila,2]<- as.numeric(j)}
+  
+}
+
+#Genero los density plots una vez tengo el data frame
+ggplot(df_intra_ANI_fil, aes(x = Valor_ANI, y = Especie, group = Especie)) + 
+  geom_density_ridges(fill = "#00AFBB")
+
+ggplot(df_intra_ANI_fil, aes(x = Valor_ANI, y = Especie, fill = factor(stat(quantile)))) +
+  stat_density_ridges(
+    geom = "density_ridges_gradient", calc_ecdf = TRUE,
+    quantiles = 4, quantile_lines = TRUE
+  ) +
+  scale_fill_viridis_d(name = "Quartiles")
+
+#Esto es para cambair el nombre de las especies en el dataframe
+# count=0
+# for ( i in df_intra_ANI_fil$Especie){
+#   count=count+1
+#   z=paste("B.",i,sep = "")
+#   df_intra_ANI_fil[count,1]<-z
+# }
 
 ```
 
