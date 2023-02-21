@@ -9,3 +9,5 @@
 <- Las lineas 356-360 están mal optimizadas, tarda un huevo generar el dataframe según lo he programado, seguro que se puede optimizar. Lo mismo para las lineas 823-827.
 
 <- faltaría añadir un script que clasifique los nombres de las especies y guarde todos los "Genome ID" para luego poder agrupar los genomas según su especié en el estudio del pangenoma.
+
+<- Tener en cuenta los tamaños de los genomas ya que fluctuan entre 1,3Mb y 3Mb.
